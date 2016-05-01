@@ -32,13 +32,12 @@ int main(int argc, char *argv[])
     QCoreApplication a(argc, argv);
 
     //Declare variables here
-    string temp = "Login Sucessful!";
     bool quit = false, admin = false;
     char buffer[2000], command[2000], user[100], password[100];
 
     //TCP Connection
     QTcpSocket *socket = new QTcpSocket();
-    socket->connectToHost("sniperdad.com", 4001);
+    socket->connectToHost("sniperdad.com", 4000);
 
     //Checks for connection
     if(!socket->waitForConnected(5000))
@@ -98,8 +97,11 @@ int main(int argc, char *argv[])
         cout << buffer << "\n";
 
         //Test Admin Stuff, Probably move to server side
-        if (strcmp( buffer , temp.c_str()) == 0){
+        if (strcmp( buffer , "Login Sucessful!") == 0){
             admin = true;
+        }
+        if (strcmp( buffer , "Logged Out!") == 0){
+            admin = false;
         }
         //End Test admin Stuff
 
