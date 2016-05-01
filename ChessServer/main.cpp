@@ -6,10 +6,15 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <iostream>
 #include <mysql++.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <iostream>
 #include <signal.h>
 #include <openssl/sha.h>
+#include "session.hpp"
 
 //global variables
 mysqlpp::Connection sql_connection;
@@ -32,6 +37,22 @@ struct connections{ // Todo for server side admin-style
     bool admin;
 };
 
+
+Session::Session(const int new_sockfd) {
+    user_id = 0;
+    sockfd = new_sockfd;
+    memset(username, 0, sizeof(username));
+    snprintf(username, sizeof(username), "Unknown");
+    user_permissions = 0;
+    channel = NULL;
+    n_channels = 0;
+    last_update = 0;
+    buffer_pos = 0;
+    last_login_attempt = 0;
+    last_ping = 0;
+    is_signed = false; 
+}
+
 //sha256
 void sha256(char *string, char outputBuffer[65])
 {
@@ -49,6 +70,7 @@ void sha256(char *string, char outputBuffer[65])
 }
 
 //handles cleaned message from client
+//void handle_message(char *buffer, const int length, int sockfd, Session session, const int sessionID){
 void handle_message(char *buffer, const int length, int sockfd) { 
     //lowercases everything
     for (int i = 0; i < length-1 ; i++){
@@ -206,6 +228,7 @@ void handle_message(char *buffer, const int length, int sockfd) {
         if ((strcmp (arg[1] , "chessadmin") == 0 && strcmp (sha256key , "409c7307b6fc6bae4aa41a56ca9603505f1e07d90b800bd08dcb7b6093a05bae") == 0 )){
     		const char *login_auth = "Login Sucessful!";
             //set admin flag for connection
+            //session[x].set_permissions(true);
     		write(sockfd, (void*)login_auth, strlen(login_auth) + 1);             //send data to socket here
         }
         else {
@@ -216,17 +239,25 @@ void handle_message(char *buffer, const int length, int sockfd) {
     else if (strcmp (arg[0] , "logout") == 0 && count == 1){
         //check if user was admin
         //set admin flag off
+        //session[x].set_permissions(false);
         write(sockfd, "Logged Out!", 12);
     }
 
 
     //admin insert
     else if (strcmp (arg[0] , "insert") == 0 && count == 3){
+        /*check if user is admin
+        if (session[x].get_permissions() == false){
+            write(sockfd, "You are not an admin!", 23);
+            return;
+        }
+        */
         //plaintext admin stuff to mysql
         //arg[1] = plaintext mysql command
         mysqlpp::Query insert_query = sql_connection.query();
 
         char rawInsert[strlen(arg[2])];
+        std::cout << "Size: "<< sizeof(rawInsert) << std::endl;
         strcpy(rawInsert, arg[2]);
 
         //Testing purposes
@@ -268,8 +299,16 @@ void handle_message(char *buffer, const int length, int sockfd) {
     }
 
     //admin update
+
     else if ( strcmp (arg[0] , "update") == 0 && (count == 3 || count == 4)){
-         mysqlpp::Query update_query = sql_connection.query();
+        /*check if user is admin
+        if (session[x].get_permissions() == false){
+            write(sockfd, "You are not an admin!", 23);
+            return;
+        }
+        */
+
+        mysqlpp::Query update_query = sql_connection.query();
 
         char rawUpdate[strlen(arg[2])];
         strcpy(rawUpdate, arg[2]);
@@ -335,6 +374,12 @@ void handle_message(char *buffer, const int length, int sockfd) {
 
     //admin delete
     else if ( strcmp (arg[0] , "delete") == 0 && (count == 2 || count == 3)){
+        /*check if user is admin
+        if (session[x].get_permissions() == false){
+            write(sockfd, "You are not an admin!", 23);
+            return;
+        }
+        */
         mysqlpp::Query delete_query = sql_connection.query();
 
         char rawDelete[strlen(arg[2])];
@@ -407,6 +452,7 @@ int main() {
     int tcp_socket = socket(AF_INET, SOCK_STREAM | O_NONBLOCK, 0);
     int *connections = NULL;
     int n_connections = 0;
+    Session **session = NULL;
    
     sockaddr_in server_address;
     server_address.sin_family = AF_INET;
@@ -434,7 +480,18 @@ int main() {
         do {
             conn = accept(tcp_socket, (struct sockaddr*)NULL, NULL);
             if (conn >= 0) {
-            	puts("Got a new connection");
+                   //Session in class w/ admin flag
+             //    Session **sptr = (Session**)malloc(sizeof(Session*)*(n_connections+1));
+             //    Session *new_session = new Session(conn);
+             //    free(session);
+             //    session = sptr;
+             //    session[n_connections] = new_session;
+             //    n_connections++;
+                
+            	   puts("Got a new connection");
+             //    fflush(stdout);
+
+                //Existing Part
                 int *ptr = (int*)malloc(sizeof(int)*(n_connections+1));
                 if (ptr) {
                     memcpy(ptr, connections, sizeof(int)*n_connections);
@@ -442,6 +499,7 @@ int main() {
                     free(connections);
                     connections = ptr;
                     n_connections++;
+                //Existing Part End
                 }
             }
         } while (conn > 0);
@@ -456,6 +514,7 @@ int main() {
                 buffer[len] = 0;
             	printf("Got msg: %s\n", buffer);
                 handle_message(buffer, len, connections[x]);
+                //handle_message(buffer, len, connections[x],session[x] , x);
             } else if (len == 0) { // Our client disconnected
             	printf("Client %i disconnected\n",x);
             	if (n_connections > 1) connections[x] = connections[n_connections-1];
@@ -474,3 +533,4 @@ int main() {
 
 	
 }
+
