@@ -9,6 +9,7 @@
 #include <mysql++.h>
 #include <iostream>
 #include <signal.h>
+#include <openssl/sha.h>
 
 //global variables
 mysqlpp::Connection sql_connection;
@@ -30,6 +31,22 @@ struct connections{ // Todo for server side admin-style
     int sockfd;
     bool admin;
 };
+
+//sha256
+void sha256(char *string, char outputBuffer[65])
+{
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX sha256;
+    SHA256_Init(&sha256);
+    SHA256_Update(&sha256, string, strlen(string));
+    SHA256_Final(hash, &sha256);
+    int i = 0;
+    for(i = 0; i < SHA256_DIGEST_LENGTH; i++)
+    {
+        sprintf(outputBuffer + (i * 2), "%02x", hash[i]);
+    }
+    outputBuffer[64] = 0;
+}
 
 //handles cleaned message from client
 void handle_message(char *buffer, const int length, int sockfd) { 
@@ -69,6 +86,7 @@ void handle_message(char *buffer, const int length, int sockfd) {
 
 	char queryBuffer[5000]; //Buffer to store query results in
 
+ 
 
     //Query Commands 
     if ( strcmp( arg[0] , "query") == 0 && (count == 2 || count == 3)){
@@ -84,7 +102,7 @@ void handle_message(char *buffer, const int length, int sockfd) {
     			mysqlpp::StoreQueryResult result = name_query.store();
                 if (result.num_rows() == 0){
                     write(sockfd, none_found, strlen(none_found)+1);
-                    return;
+                    goto end;
                 }
     			bufferPos += snprintf(&queryBuffer[bufferPos], sizeof(queryBuffer) - bufferPos, "%15s %8s %8s\n", "name", "games", "wins");
 
@@ -99,20 +117,19 @@ void handle_message(char *buffer, const int length, int sockfd) {
                 puts(errBuffer);
                 std::cerr << "Query error: " << queryErr.errnum() << std::endl;
                 write(sockfd, "Query Error. Try Again", 23);
-                return;
+
             }
             catch (mysqlpp::ConnectionFailed badCon){
                      try {
                         sql_connection.connect(sql_db.c_str(), sql_host.c_str(), sql_user.c_str(), sql_pass.c_str(), 3307);
                         puts("Successfully reconnected to SQL server.");
-                        goto test2query;
+                        goto testquery;
                     }
                     catch (mysqlpp::ConnectionFailed sql_error) {
                         std::string error = "SQL reconnect error: "; 
                         error += sql_error.what();
                         puts(error.c_str());
                         write(sockfd, "Connection Error", 17);
-                        return;
                     }
             }
         }
@@ -128,14 +145,13 @@ void handle_message(char *buffer, const int length, int sockfd) {
                 mysqlpp::StoreQueryResult result = name_query.store();
                 if (result.num_rows() == 0){
                     write(sockfd, none_found, strlen(none_found)+1);
-                    return;
+                    goto end;
                 }
                 bufferPos += snprintf(&queryBuffer[bufferPos], sizeof(queryBuffer) - bufferPos, "%15s %8s %8s\n", "name", "games", "wins");
                 for (int x = 0; x < result.num_rows(); x++) {
                     bufferPos += snprintf(&queryBuffer[bufferPos], sizeof(queryBuffer)-bufferPos,"%15s %8i %8i\n", std::string(result[x]["name"]).c_str(), (int)result[x]["games"], (int)result[x]["wins"]);
                 }
                 write(sockfd, (void*)queryBuffer, bufferPos+1);
-                return;
             }
             catch (mysqlpp::BadQuery queryErr) { //Should not happen?
                 char errBuffer[2048];
@@ -143,7 +159,6 @@ void handle_message(char *buffer, const int length, int sockfd) {
                 puts(errBuffer);
                 std::cerr << "Query error: " << queryErr.errnum() << std::endl;
                 write(sockfd, "Query Error. Try Again", 23);
-                return;
             }
             catch (mysqlpp::ConnectionFailed badCon){
                      try {
@@ -156,16 +171,16 @@ void handle_message(char *buffer, const int length, int sockfd) {
                         error += sql_error.what();
                         puts(error.c_str());
                         write(sockfd, "Connection Error", 17);
-                        return;
                     }
             }
 
         }   
 
+       
+
         //If query + 1-2 words that dont fit
         else {
             write(sockfd, "Invalid query paramters! Type \"help\" for help.", 49);
-            return;
         }
     }
 
@@ -182,17 +197,194 @@ void handle_message(char *buffer, const int length, int sockfd) {
  		write(sockfd, (void*)help_message, strlen(help_message)+1);
     }
 
-    //admin login command
+   
+    //admin login command w/ sha256  
     else if (strcmp (arg[0] , "login") == 0 && count == 3){
-        if ((strcmp (arg[1] , "danny") == 0 && strcmp (arg[2] , "gamer123") == 0 )){
+        static char sha256key[65];
+        sha256(arg[2], sha256key);
+        //chessadmin/cmpe138danny
+        if ((strcmp (arg[1] , "chessadmin") == 0 && strcmp (sha256key , "409c7307b6fc6bae4aa41a56ca9603505f1e07d90b800bd08dcb7b6093a05bae") == 0 )){
     		const char *login_auth = "Login Sucessful!";
-    		//send data to socket here
-    		write(sockfd, (void*)login_auth, strlen(login_auth) + 1);
+            //set admin flag for connection
+    		write(sockfd, (void*)login_auth, strlen(login_auth) + 1);             //send data to socket here
         }
         else {
             write(sockfd, "Invalid login!", 15);
         }
 	}
+
+    else if (strcmp (arg[0] , "logout") == 0 && count == 1){
+        //check if user was admin
+        //set admin flag off
+        write(sockfd, "Logged Out!", 12);
+    }
+
+
+    //admin insert
+    else if (strcmp (arg[0] , "insert") == 0 && count == 3){
+        //plaintext admin stuff to mysql
+        //arg[1] = plaintext mysql command
+        mysqlpp::Query insert_query = sql_connection.query();
+
+        char rawInsert[strlen(arg[2])];
+        strcpy(rawInsert, arg[2]);
+
+        //Testing purposes
+        std::cout << "R1: " << arg[2] << " vs " << rawInsert << std::endl;
+        //Removes Quotations
+        for (int i = 0; i < strlen(rawInsert); i++){
+        rawInsert[i] = rawInsert[i+1];
+        }
+        rawInsert[strlen(rawInsert)-1] = '\0';
+        //Testing Purposes
+        std::cout << "R2: " << arg[2] << " vs " << rawInsert << std::endl;
+
+        try{
+            std::cout << "Okay" << std::endl;
+            std::cout << "INSERT INTO "<< arg[1] << " VALUES " << rawInsert << ";" << std::endl;
+
+            insert_query << "INSERT INTO "<< arg[1] << " VALUES " << rawInsert << ";";
+            insert_query.execute();
+        }
+        catch (mysqlpp::BadQuery er) { // handle any connection or
+        // query errors that may come up
+        std::cerr << "Error: " << er.what() << std::endl;
+            write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+        } catch (const mysqlpp::BadConversion& er) {
+        // Handle bad conversions
+        std::cerr << "Conversion error: " << er.what() << std::endl <<
+                "\tretrieved data size: " << er.retrieved <<
+                ", actual size: " << er.actual_size << std::endl;
+            write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+        } catch (const mysqlpp::Exception& er) {
+        // Catch-all for any other MySQL++ exceptions
+        std::cerr << "Error: " << er.what() << std::endl;
+            write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+        }
+        write(sockfd, "Insert Sucess!", 15);
+    }
+
+    //admin update
+    else if ( strcmp (arg[0] , "update") == 0 && (count == 3 || count == 4)){
+         mysqlpp::Query update_query = sql_connection.query();
+
+        char rawUpdate[strlen(arg[2])];
+        strcpy(rawUpdate, arg[2]);
+        char rawUpdate2[strlen(arg[3])];
+        strcpy(rawUpdate2, arg[3]);
+
+        //Testing purposes
+        std::cout << "R1: " << arg[2] << " vs " << rawUpdate << std::endl;
+        //Removes Quotations
+        for (int i = 0; i < strlen(rawUpdate); i++){
+        rawUpdate[i] = rawUpdate[i+1];
+        }
+        rawUpdate[strlen(rawUpdate)-1] = '\0';
+        //Testing Purposes
+        std::cout << "R2: " << arg[2] << " vs " << rawUpdate << std::endl;
+
+        if (count == 4){
+            //Testing purposes
+            std::cout << "R1: " << arg[2] << " vs " << rawUpdate2 << std::endl;
+            //Removes Quotations
+            for (int i = 0; i < strlen(rawUpdate2); i++){
+            rawUpdate2[i] = rawUpdate2[i+1];
+            }
+            rawUpdate2[strlen(rawUpdate2)-1] = '\0';
+            //Testing Purposes
+            std::cout << "R2: " << arg[2] << " vs " << rawUpdate2 << std::endl;
+        }
+
+
+        try{
+            if (count == 4){ // W/ where
+                std::cout << "Okay" << std::endl;
+                std::cout << "UPDATE "<< arg[1] << " SET " << rawUpdate << " WHERE " << rawUpdate2 << ";" << std::endl;
+                update_query << "UPDATE "<< arg[1] << " SET " << rawUpdate << " WHERE " << rawUpdate2 <<  ";";
+            }
+            else if (count == 3){ // W/o where
+                std::cout << "Okay" << std::endl;
+                std::cout << "UPDATE "<< arg[1] << " SET " << ";" << std::endl;
+                update_query << "UPDATE "<< arg[1] << " SET " << ";";
+            }
+            update_query.execute();
+        }
+        catch (mysqlpp::BadQuery er) { // handle any connection or
+        // query errors that may come up
+        std::cerr << "Error: " << er.what() << std::endl;
+            write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+        } catch (const mysqlpp::BadConversion& er) {
+        // Handle bad conversions
+        std::cerr << "Conversion error: " << er.what() << std::endl <<
+                "\tretrieved data size: " << er.retrieved <<
+                ", actual size: " << er.actual_size << std::endl;
+            write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+        } catch (const mysqlpp::Exception& er) {
+        // Catch-all for any other MySQL++ exceptions
+        std::cerr << "Error: " << er.what() << std::endl;
+            write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+        }
+        write(sockfd, "Update Sucess!", 15);
+    }
+
+    //admin delete
+    else if ( strcmp (arg[0] , "delete") == 0 && (count == 2 || count == 3)){
+        mysqlpp::Query delete_query = sql_connection.query();
+
+        char rawDelete[strlen(arg[2])];
+        strcpy(rawDelete, arg[2]);
+
+        if (count == 3){
+            //Testing purposes
+            std::cout << "R1: " << arg[2] << " vs " << rawDelete << std::endl;
+            //Removes Quotations
+            for (int i = 0; i < strlen(rawDelete); i++){
+            rawDelete[i] = rawDelete[i+1];
+            }
+            rawDelete[strlen(rawDelete)-1] = '\0';
+            //Testing Purposes
+            std::cout << "R2: " << arg[2] << " vs " << rawDelete << std::endl;
+         }
+        try{
+            if (count == 3){
+                std::cout << "Okay" << std::endl;
+                std::cout << "DELETE FROM "<< arg[1] << " where " << rawDelete << ";" << std::endl;
+                delete_query << "DELETE FROM "<< arg[1] << " where " << rawDelete << ";";
+            }
+            else if (count == 2){
+                std::cout << "Okay" << std::endl;
+                std::cout << "DELETE FROM "<< arg[1] << ";" << std::endl;
+                delete_query << "DELETE FROM "<< arg[1] << ";";
+            }
+            delete_query.execute();
+        }
+        catch (mysqlpp::BadQuery er) { // handle any connection or
+        // query errors that may come up
+        std::cerr << "Error: " << er.what() << std::endl;
+        write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+        } catch (const mysqlpp::BadConversion& er) {
+        // Handle bad conversions
+        std::cerr << "Conversion error: " << er.what() << std::endl <<
+                "\tretrieved data size: " << er.retrieved <<
+                ", actual size: " << er.actual_size << std::endl;
+            write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+
+        } catch (const mysqlpp::Exception& er) {
+        // Catch-all for any other MySQL++ exceptions
+        std::cerr << "Error: " << er.what() << std::endl;
+            write(sockfd, "Error syntax/bad values!", 25);
+            goto end;
+        }
+        write(sockfd, "Delete Sucess!", 15);
+    }
 
     //bad command
 	else
@@ -200,9 +392,14 @@ void handle_message(char *buffer, const int length, int sockfd) {
 		write(sockfd, "Invalid command! Type \"help\" for help.", 39);
 	}
 
+    end:
+    free(data);
+    free (arg);
+    return;
 }
 
 int main() {
+    //Sig Handler Error Check
 	if (signal(SIGINT, sig_handler) == SIG_ERR)
 		printf("\ncan't catch SIGINT\n");
 
@@ -214,7 +411,7 @@ int main() {
     sockaddr_in server_address;
     server_address.sin_family = AF_INET;
     server_address.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_address.sin_port = htons(4001); // using port 4000
+    server_address.sin_port = htons(4000); // using port 4000
    
     if (bind(tcp_socket, (struct sockaddr*)&server_address, sizeof(server_address))) {
         puts("Call to bind failed.");
@@ -248,6 +445,7 @@ int main() {
                 }
             }
         } while (conn > 0);
+        
         // Reading from socket into buffer
         char buffer[2000];
         for (int x = 0; x < n_connections; ++x) {
@@ -274,6 +472,5 @@ int main() {
     }
     close(tcp_socket);
 
-
-		
+	
 }
