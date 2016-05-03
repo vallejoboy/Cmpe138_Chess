@@ -18,3 +18,19 @@ public:
 };
 
 
+Session::Session(const int new_sockfd) {
+	sockfd = new_sockfd;
+	admin = false;
+}
+
+bool Session::get_permissions() const {
+	return admin;
+}
+
+void Session::set_permissions(const bool isAdmin) {
+	admin = isAdmin;
+}
+
+int Session::get_sockfd(){
+	return sockfd;
+}
